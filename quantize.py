@@ -128,9 +128,12 @@ class VectorQuantizer(nn.Module):
         num_frames = (1 - paddings).sum()
         denominator = (num_frames * G * D).clamp(min=1)
 
-        kmeans_loss = ((q_vec - inputs.detach())**2 *
+        inputs_to_loss = inputs
+        if self.normalize_codebook:
+            inputs_to_loss = F.normalize(inputs, dim=-1)
+        kmeans_loss = ((q_vec - inputs_to_loss.detach())**2 *
                        (1 - paddings)[:, :, None]).sum() / denominator
-        commitment_loss = ((inputs - q_vec.detach())**2 *
+        commitment_loss = ((inputs_to_loss - q_vec.detach())**2 *
                            (1 - paddings)[:, :, None]).sum() / denominator
         total_loss = kmeans_loss + self.beta * commitment_loss
 
@@ -141,7 +144,7 @@ class VectorQuantizer(nn.Module):
         quantized_vectors = quantized_vectors * (1 - paddings)[:, :, None]
 
         onehots = _ids_to_onehots(
-            ids,
+            ids * (1 - paddings)[:, :, None],
             codebook_size=self.codebook_size,
         )
         infos = _add_codebook_summaries(onehots, paddings)
@@ -205,16 +208,19 @@ class VectorQuantizerEMA(nn.Module):
 
         num_frames = (1 - paddings).sum()
         denominator = (num_frames * G * D).clamp(min=1)
-        commitment_loss = ((inputs - q_vec.detach())**2 *
+        inputs_to_loss = inputs
+        if self.normalize_inputs:
+            inputs_to_loss = F.normalize(inputs, dim=-1)
+        commitment_loss = ((inputs_to_loss - q_vec.detach())**2 *
                            (1 - paddings)[:, :, None]).sum() / denominator
 
         total_loss = self.beta * commitment_loss
 
         onehots = _ids_to_onehots(
-            ids,
+            ids * (1 - paddings)[:, :, None],
             codebook_size=self.codebook_size,
         )  # [B,T,G, C]
-        onehots = onehots * (1 - paddings)[:, :, None].float()
+        onehots = onehots * (1 - paddings).to(onehots.dtype)[:, :, None]
 
         if self.training:
             current_cluster_size = onehots.sum(dim=(0,
@@ -313,7 +319,7 @@ class GumbelSoftmaxVectorQuantizer(nn.Module):
         # [batch_size, seq_len, 1].
         mask = (1 - paddings)[:, :, None].to(ids.dtype)
         ids = ids * mask + (-1) * (1 - mask)
-        onehots = _ids_to_onehots(ids, codebook_size=self.codebook_size)
+        onehots = _ids_to_onehots(ids * mask, codebook_size=self.codebook_size)
         # We need this to stop gradients on the padded frames.
         mask = mask.to(inputs.dtype)
         onehots = onehots * mask[:, :, :, None]

@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from enum import Enum, unique
 from typing import Union
 
@@ -198,7 +199,6 @@ def quantize_by_nearest_neighbor(inputs: torch.Tensor, codebook: torch.Tensor,
     Returns:
         ids: Tensor of shape [..., num_codebooks]
         quantized: Tensor of shape [..., num_codebooks, codebook_dim]
-        onehots
 
     """
     batch_dims = _einsum_dims[:inputs.ndim - 2]
@@ -232,7 +232,7 @@ def _apply_paddings(ids: torch.Tensor, quantized_vectors: torch.Tensor,
 
     # ids are padded with -1.
     ids_paddings = paddings[:, :, None].to(ids.dtype)
-    ids = ids * (1 - ids_paddings)  # + (-1) * ids_paddings
+    ids = ids * (1 - ids_paddings) + (-1) * ids_paddings
     quantized_vectors = quantized_vectors * (1 - paddings)[:, :, None, None]
     return ids, quantized_vectors
 
