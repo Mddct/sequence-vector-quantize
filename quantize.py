@@ -83,7 +83,10 @@ class RandomVectorQuantizer(nn.Module):
 
 
 class VectorQuantizer(nn.Module):
-    """Trainable VQ-VAE style quantizer with MSE + commitment losses."""
+    """Trainable VQ-VAE style quantizer with MSE + commitment losses.
+    https://arxiv.org/pdf/1711.00937.pdf
+    https://arxiv.org/pdf/1910.05453.pdf. (vq-wav2vec)
+    """
 
     def __init__(self,
                  num_codebooks: int,
