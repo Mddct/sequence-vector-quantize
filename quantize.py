@@ -213,12 +213,15 @@ class VectorQuantizerEMA(nn.Module):
         onehots = _ids_to_onehots(
             ids,
             codebook_size=self.codebook_size,
-        )  # [B,T,G,codebook_size]
+        )  # [B,T,G, C]
+        onehots = onehots * (1 - paddings)[:, :, None].float()
 
         if self.training:
-            current_cluster_size = onehots.sum(dim=0)  # [T,G,D]
+            current_cluster_size = onehots.sum(dim=(0,
+                                                    1)).transpose(0,
+                                                                  1)  # [C,G]
 
-            current_dw = torch.einsum('btgd,btgv->vgd', x, onehots)
+            current_dw = torch.einsum('btgd,btgv->vgd', x, onehots.clone())
             if dist.is_initialized() and dist.get_world_size() > 1:
                 dist.all_reduce(current_cluster_size, op=dist.ReduceOp.SUM)
                 dist.all_reduce(current_dw, op=dist.ReduceOp.SUM)
