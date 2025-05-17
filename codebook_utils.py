@@ -230,7 +230,7 @@ def _apply_paddings(ids: torch.Tensor, quantized_vectors: torch.Tensor,
 
     # ids are padded with -1.
     ids_paddings = paddings[:, :, None].to(ids.dtype)
-    ids = ids * (1 - ids_paddings) + (-1) * ids_paddings
+    ids = ids * (1 - ids_paddings)  # + (-1) * ids_paddings
     quantized_vectors = quantized_vectors * (1 - paddings)[:, :, None, None]
     return ids, quantized_vectors
 
