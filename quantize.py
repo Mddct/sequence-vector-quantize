@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from codebook_utils import (SimilarityMetric, _add_codebook_summaries,
-                            _apply_paddings, _ids_to_onehots,
+                            _apply_paddings, _einsum_dims, _ids_to_onehots,
                             quantize_by_nearest_neighbor)
 
 
@@ -261,5 +261,77 @@ class VectorQuantizerEMA(nn.Module):
                 "total_loss": total_loss,
                 "commitment_loss": commitment_loss,
             },
+            summary=infos,
+        )
+
+
+class GumbelSoftmaxVectorQuantizer(nn.Module):
+    """Vector quantizer with Gumbel-Softmax straight-through estimator.
+    https://arxiv.org/pdf/2006.11477
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_codebooks: int,
+        codebook_size: int,
+        codebook_dim: int,
+        temperature_fn: Callable,
+        normalize_codebook: bool = False,
+        normalize_inputs: bool = False,
+    ):
+        super().__init__()
+        self.temperature_fn = temperature_fn
+        self.input_proj = nn.Linear(input_dim, num_codebooks * codebook_size)
+        self.num_codebooks = num_codebooks
+        self.codebook_size = codebook_size
+        self.codebook_dim = codebook_dim
+        self.normalize_codebook = normalize_codebook
+        self.normalize_inputs = normalize_inputs
+
+        self.codebook = nn.Parameter(
+            torch.randn(
+                codebook_size,
+                num_codebooks,
+                codebook_dim,
+            ))
+
+    def forward(self,
+                inputs: torch.Tensor,
+                paddings: torch.Tensor,
+                step: int = 0):
+        """forward for training"""
+        B, T, _ = inputs.shape
+        logits = self.input_proj(inputs).view(B, T, self.num_codebooks,
+                                              self.codebook_size)
+        # [batch_size, seq_len, num_codebooks].
+        ids = torch.argmax(logits, dim=-1)
+        tau = self.temperature_fn(step)
+        gumbel = -torch.empty_like(logits).exponential_().log()
+        logits = (logits + gumbel) / tau
+
+        # [batch_size, seq_len, 1].
+        mask = (1 - paddings)[:, :, None].to(ids.dtype)
+        ids = ids * mask + (-1) * (1 - mask)
+        onehots = _ids_to_onehots(ids, codebook_size=self.codebook_size)
+        # We need this to stop gradients on the padded frames.
+        mask = mask.to(inputs.dtype)
+        onehots = onehots * mask[:, :, :, None]
+        # [batch_size, seq_len, num_codebooks, vocab_size].
+        y_soft = torch.nn.functional.softmax(logits, dim=-1)
+        y_soft = y_soft * mask[:, :, :, None]
+
+        # Straight-through estimator such that dL/y_soft = dL/onehots.
+        onehots = y_soft + (onehots - y_soft).detach()
+        batch_dims = _einsum_dims[:onehots.ndim - 2]
+        quantized_vectors = torch.einsum(f"{batch_dims}gv,vgh->{batch_dims}gh",
+                                         onehots, self.codebook)
+        quantized_vectors = quantized_vectors * mask[:, :, :, None]
+        infos = _add_codebook_summaries(onehots=onehots, paddings=paddings)
+        return QuantizerOutputs(
+            # [batch_size, seq_len, num_codebooks].
+            ids=ids,
+            # [batch_size, seq_len, num_codebooks, codebook_dim].
+            quantized_vectors=quantized_vectors,
             summary=infos,
         )
