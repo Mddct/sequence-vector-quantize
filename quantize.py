@@ -17,7 +17,7 @@ class QuantizerOutputs:
     # [..., num_codebooks, codebook_dim].
     quantized_vectors: torch.Tensor
     # Scalar of quantizer loss.
-    loss: Optional[torch.Tensor] = None
+    loss: Optional[Dict[str, torch.Tensor]] = None
     summary: Optional[Dict] = None
 
 
@@ -78,5 +78,73 @@ class RandomVectorQuantizer(nn.Module):
         return QuantizerOutputs(
             ids=ids,
             quantized_vectors=quantized,
+            summary=infos,
+        )
+
+
+class VectorQuantizer(nn.Module):
+    """Trainable VQ-VAE style quantizer with MSE + commitment losses."""
+
+    def __init__(self,
+                 num_codebooks: int,
+                 codebook_size: int,
+                 codebook_dim: int,
+                 normalize_codebook: bool = True,
+                 normalize_inputs: bool = True,
+                 beta: float = 1.0):
+        super().__init__()
+        self.num_codebooks = num_codebooks
+        self.codebook_size = codebook_size
+        self.codebook_dim = codebook_dim
+        self.normalize_codebook = normalize_codebook
+        self.normalize_inputs = normalize_inputs
+        # [G, V, D]
+        self.codebook = nn.Parameter(
+            torch.randn(codebook_size, num_codebooks, codebook_dim))
+        self.beta = beta
+
+        if self.normalize_codebook:
+            with torch.no_grad():
+                self.codebook.data = F.normalize(self.codebook.data, dim=-1)
+
+    def forward(self, inputs: torch.Tensor, paddings: torch.Tensor):
+        inputs = inputs * (1 - paddings)[:, :, None]
+        B, T, _ = inputs.shape
+        G, D = self.num_codebooks, self.codebook_dim
+        x = inputs.view(B, T, G, D)
+        ids, quantized = quantize_by_nearest_neighbor(
+            x, self.codebook, SimilarityMetric.L2_DISTANCE)
+
+        ids, quantized = _apply_paddings(ids, quantized, self.codebook)
+
+        q_vec = quantized.view([B, T, -1])
+        num_frames = (1 - paddings).sum()
+        denominator = (num_frames * G * D).clamp(min=1)
+
+        kmeans_loss = ((q_vec - inputs.detach())**2 *
+                       (1 - paddings)[:, :, None]).sum() / denominator
+        commitment_loss = ((inputs - q_vec.detach())**2 *
+                           (1 - paddings)[:, :, None]).sum() / denominator
+        total_loss = kmeans_loss + self.beta * commitment_loss
+
+        # Straight-through estimator such that dL/inputs = dL/q_outputs.
+        # Note that gradient on quantized_vectors is not propagated to the codebook.
+        quantized_vectors = inputs + (q_vec - inputs).detach()
+        # We need this to stop gradients on the padded inputs.
+        quantized_vectors = quantized_vectors * (1 - paddings)[:, :, None]
+
+        onehots = _ids_to_onehots(
+            ids,
+            codebook_size=self.codebook_size,
+        )
+        infos = _add_codebook_summaries(onehots, paddings)
+        return QuantizerOutputs(
+            ids=ids,
+            quantized_vectors=quantized_vectors,
+            loss={
+                "total_loss": total_loss,
+                "kmeans_loss": kmeans_loss,
+                "commitment_loss": commitment_loss,
+            },
             summary=infos,
         )
