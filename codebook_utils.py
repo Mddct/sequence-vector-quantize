@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from enum import Enum, unique
 from typing import Union
 
@@ -10,6 +9,9 @@ import torch.distributed as dist
 class SimilarityMetric(Enum):
     L2_DISTANCE = 0
     DOT_PRODUCT = 1
+
+
+_einsum_dims = "abcdefwxyz"
 
 
 def compute_code_histogram_allgather(onehots: torch.Tensor,
@@ -199,7 +201,7 @@ def quantize_by_nearest_neighbor(inputs: torch.Tensor, codebook: torch.Tensor,
         onehots
 
     """
-    batch_dims = inputs.shape[:-2]
+    batch_dims = _einsum_dims[:inputs.ndim - 2]
     distance = -2 * torch.einsum(f"{batch_dims}gh,vgh->{batch_dims}vg", inputs,
                                  codebook)
     # l2_dist = (inputs - codebook) ** 2 = inputs ** 2 - 2 * input * codebook + codebook ** 2.
