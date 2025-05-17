@@ -22,7 +22,9 @@ class QuantizerOutputs:
 
 
 class RandomVectorQuantizer(nn.Module):
-    """Random-projection quantizer (frozen codebook)."""
+    """Random-projection quantizer (frozen codebook).
+    https://arxiv.org/pdf/2202.01855
+    """
 
     def __init__(
         self,
