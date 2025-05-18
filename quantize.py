@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from codebook_utils import (SimilarityMetric, _add_codebook_summaries,
                             _apply_paddings, _einsum_dims, _ids_to_onehots,
-                            quantize_by_nearest_neighbor)
+                            _lookup, quantize_by_nearest_neighbor)
 
 
 @dataclass
@@ -159,6 +159,15 @@ class VectorQuantizer(nn.Module):
             summary=infos,
         )
 
+    def quantize(self, inputs: torch.Tensor, paddings: torch.Tensor):
+        B, T, _ = inputs.shape
+        G, D = self.num_codebooks, self.codebook_dim
+        x = inputs.view(B, T, G, D)
+        ids, quantized = quantize_by_nearest_neighbor(
+            x, self.codebook, SimilarityMetric.L2_DISTANCE)
+        # [B,T,G], [B,T,d]
+        return ids, quantized
+
 
 class VectorQuantizerEMA(nn.Module):
     """Trainable VQ-VAE style quantizer with EMA updates for the codebook."""
@@ -270,6 +279,15 @@ class VectorQuantizerEMA(nn.Module):
             summary=infos,
         )
 
+    def quantize(self, inputs: torch.Tensor, paddings: torch.Tensor):
+        B, T, _ = inputs.shape
+        G, D = self.num_codebooks, self.codebook_dim
+        x = inputs.view(B, T, G, D)
+        ids, quantized = quantize_by_nearest_neighbor(
+            x, self.codebook, SimilarityMetric.L2_DISTANCE)
+        # [B,T,G], [B,T,d]
+        return ids, quantized
+
 
 class GumbelSoftmaxVectorQuantizer(nn.Module):
     """Vector quantizer with Gumbel-Softmax straight-through estimator.
@@ -341,3 +359,13 @@ class GumbelSoftmaxVectorQuantizer(nn.Module):
             quantized_vectors=quantized_vectors,
             summary=infos,
         )
+
+    def quantize(self, inputs: torch.Tensor, paddings: torch.Tensor):
+        B, T, _ = inputs.shape
+
+        logits = self.input_proj(inputs).view(B, T, self.num_codebooks,
+                                              self.codebook_size)
+        # [batch_size, seq_len, num_codebooks].
+        ids = torch.argmax(logits, dim=-1)
+
+        return _lookup(ids, self.codebook)
