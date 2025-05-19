@@ -47,10 +47,14 @@ class RandomVectorQuantizer(nn.Module):
         codebook_g.manual_seed(seed + 1)
         self.normalize_codebook = normalize_codebook
         self.normalize_inputs = normalize_inputs
-        self.proj = nn.Parameter(torch.rand(input_dim,
-                                            num_codebooks * codebook_dim,
-                                            generator=proj_g),
-                                 requires_grad=False)
+        self.proj = nn.Parameter(
+            torch.empty(
+                input_dim,
+                num_codebooks * codebook_dim,
+            ),
+            requires_grad=False,
+        )
+        nn.init.xavier_uniform_(self.proj, gain=1.0, generator=proj_g)
         self.num_codebooks = num_codebooks
         self.codebook_size = codebook_size
         self.codebook_dim = codebook_dim
@@ -405,7 +409,7 @@ class LookupFreeQuantizer(nn.Module):
           Returns:
               global indices, e.g., [2, 1] shape [B,T,G]
         """
-        group_size = self.num_codebooks * self.codebook_dim
+        group_size = self.num_codebooks
         indices = dim_indices * grouped_base
         pad_len = (group_size - indices.shape[-1] % group_size) % group_size
         indices = torch.cat([
@@ -416,7 +420,7 @@ class LookupFreeQuantizer(nn.Module):
         ],
                             dim=-1)
         indices = indices.reshape(*indices.shape[:-1], -1,
-                                  group_size).sum(dim=-1)
+                                  group_size).sum(dim=-2)
         if indices.shape[-1] == 1:
             indices = indices[..., 0]
         return indices
@@ -432,6 +436,7 @@ class LookupFreeQuantizer(nn.Module):
                          device=inputs.device) % self.num_codebooks)
         samples = inputs >= 0
         quantized = torch.where(samples, 1.0, -1.0)
+        print("hello---", quantized.shape)
         ids = self._get_indices(samples, base)
 
         inputs_to_loss = inputs * (1 - paddings)[:, :, None]
@@ -463,7 +468,6 @@ class LookupFreeQuantizer(nn.Module):
 
     def quantize(self, inputs: torch.Tensor, paddings: torch.Tensor):
         inputs = self.proj(inputs)  # [B,T,G*D]
-        G, D = self.num_codebooks, self.codebook_dim
         base = torch.pow(
             2,
             torch.arange(self.codebook_dim * self.num_codebooks,
@@ -473,17 +477,3 @@ class LookupFreeQuantizer(nn.Module):
         quantized = torch.where(samples, 1.0, -1.0)
         ids = self._get_indices(samples, base)
         return ids, quantized
-
-
-if __name__ == '__main__':
-    lfq = LookupFreeQuantizer(
-        256,
-        1,
-        2 ^ 16,
-        16,
-    )
-
-    inputs = torch.rand(1, 100, 256)
-    paddings = torch.zeros(1, 100)
-    print(lfq.quantize(inputs, paddings))
-    print(lfq(inputs, paddings))
