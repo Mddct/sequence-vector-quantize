@@ -3,10 +3,10 @@
 ## focus on single codebook for 'semantic' but large
 
 ## ongoing
-- [ ] vq
-- [ ] lfq
+- [x] vq
+- [x] lfq
 - [ ] fsq
-- [ ] random quantize (in bestrq)
+- [x] random quantize (in bestrq)
 - [ ] rvq
-- [ ] joint training with ctc in wenet xxx-formers
+- [x] [joint training with ctc in wenet xxx-formers](https://github.com/Mddct/usm-tokenizer)
 - [ ] joint training with LLM-aware quantize
