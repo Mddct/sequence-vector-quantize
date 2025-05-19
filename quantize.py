@@ -128,7 +128,7 @@ class VectorQuantizer(nn.Module):
             x, self.codebook, SimilarityMetric.L2_DISTANCE)
         ids = ids.view(B, T, G)
         quantized = quantized.view(B, T, G, D)
-        ids, quantized = _apply_paddings(ids, quantized, self.codebook)
+        ids, quantized = _apply_paddings(ids, quantized, paddings)
 
         q_vec = quantized.view([B, T, -1])
         num_frames = (1 - paddings).sum()
@@ -150,7 +150,7 @@ class VectorQuantizer(nn.Module):
         quantized_vectors = quantized_vectors * (1 - paddings)[:, :, None]
 
         onehots = _ids_to_onehots(
-            ids * (1 - paddings)[:, :, None],
+            ids * (1 - paddings).to(ids.dtype)[:, :, None],
             codebook_size=self.codebook_size,
         )
         infos = _add_codebook_summaries(onehots, paddings)
@@ -171,7 +171,7 @@ class VectorQuantizer(nn.Module):
         x = inputs.view(B, T, G, D)
         ids, quantized = quantize_by_nearest_neighbor(
             x, self.codebook, SimilarityMetric.L2_DISTANCE)
-        # [B,T,G], [B,T,d]
+        quantized = quantized.reshape(B, T, -1)
         return ids, quantized
 
 
@@ -218,7 +218,7 @@ class VectorQuantizerEMA(nn.Module):
             x, self.codebook, SimilarityMetric.L2_DISTANCE)
         ids = ids.view(B, T, G)
         quantized = quantized.view(B, T, G, D)
-        ids, quantized = _apply_paddings(ids, quantized, self.codebook)
+        ids, quantized = _apply_paddings(ids, quantized, paddings)
         q_vec = quantized.view([B, T, -1])
 
         num_frames = (1 - paddings).sum()
@@ -232,17 +232,18 @@ class VectorQuantizerEMA(nn.Module):
         total_loss = self.beta * commitment_loss
 
         onehots = _ids_to_onehots(
-            ids * (1 - paddings)[:, :, None],
+            ids * (1 - paddings).to(ids.dtype)[:, :, None],
             codebook_size=self.codebook_size,
         )  # [B,T,G, C]
-        onehots = onehots * (1 - paddings).to(onehots.dtype)[:, :, None]
+        onehots = onehots * (1 - paddings).to(ids.dtype)[:, :, None, None]
 
         if self.training:
             current_cluster_size = onehots.sum(dim=(0,
                                                     1)).transpose(0,
                                                                   1)  # [C,G]
 
-            current_dw = torch.einsum('btgd,btgv->vgd', x, onehots.clone())
+            current_dw = torch.einsum('btgd,btgv->vgd', x,
+                                      onehots.clone().to(x.dtype))
             if dist.is_initialized() and dist.get_world_size() > 1:
                 dist.all_reduce(current_cluster_size, op=dist.ReduceOp.SUM)
                 dist.all_reduce(current_dw, op=dist.ReduceOp.SUM)
@@ -291,7 +292,7 @@ class VectorQuantizerEMA(nn.Module):
         x = inputs.view(B, T, G, D)
         ids, quantized = quantize_by_nearest_neighbor(
             x, self.codebook, SimilarityMetric.L2_DISTANCE)
-        # [B,T,G], [B,T,d]
+        quantized = quantized.reshape(B, T, -1)
         return ids, quantized
 
 
@@ -436,7 +437,6 @@ class LookupFreeQuantizer(nn.Module):
                          device=inputs.device) % self.num_codebooks)
         samples = inputs >= 0
         quantized = torch.where(samples, 1.0, -1.0)
-        print("hello---", quantized.shape)
         ids = self._get_indices(samples, base)
 
         inputs_to_loss = inputs * (1 - paddings)[:, :, None]
@@ -467,6 +467,7 @@ class LookupFreeQuantizer(nn.Module):
         )
 
     def quantize(self, inputs: torch.Tensor, paddings: torch.Tensor):
+        B, T, D = inputs.shape
         inputs = self.proj(inputs)  # [B,T,G*D]
         base = torch.pow(
             2,
@@ -477,3 +478,30 @@ class LookupFreeQuantizer(nn.Module):
         quantized = torch.where(samples, 1.0, -1.0)
         ids = self._get_indices(samples, base)
         return ids, quantized
+
+
+if __name__ == '__main__':
+    # lfq = LookupFreeQuantizer(
+    #     256,
+    #     2,
+    #     2**16,
+    #     16,
+    # )
+
+    generator = torch.Generator()
+    generator.manual_seed(2011)
+    inputs = torch.rand(1, 100, 256, generator=generator)
+    paddings = torch.zeros(1, 100)
+    # ids, q_vec = lfq.quantize(inputs, paddings)
+    # print(ids.shape)
+    # print(q_vec.shape)
+    # lfq(inputs, paddings)
+    # bestrq = RandomVectorQuantizer(256, 2, 8192, 8, seed=2024)
+    # outputs = bestrq(inputs, paddings)
+    # print(outputs.ids, outputs.quantized_vectors.shape)
+
+    vq = VectorQuantizerEMA(2, 8192, 128)
+    outputs = vq(inputs, paddings)
+    print(outputs.ids.shape, outputs.quantized_vectors.shape)
+    print(outputs)
+    # print(vq.quantize(inputs, paddings)[1].shape)
