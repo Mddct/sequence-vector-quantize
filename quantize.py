@@ -1,4 +1,6 @@
+import math
 from dataclasses import dataclass
+from re import match
 from typing import Callable, Dict, Optional
 
 import torch
@@ -369,3 +371,105 @@ class GumbelSoftmaxVectorQuantizer(nn.Module):
         ids = torch.argmax(logits, dim=-1)
 
         return _lookup(ids, self.codebook)
+
+
+class LookupFreeQuantizer(nn.Module):
+    """https://arxiv.org/pdf/2310.05737
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_codebooks: int,
+        codebook_size: int,
+        codebook_dim: int,
+    ) -> None:
+        super().__init__()
+
+        self.num_codebooks = num_codebooks
+        self.codebook_size = codebook_size
+        self.codebook_dim = codebook_dim
+
+        # NOTE: log2(codebook_size) per group
+        self.proj = torch.nn.Linear(input_dim, num_codebooks * codebook_dim)
+
+    def _get_indices(self, dim_indices: torch.Tensor,
+                     grouped_base: torch.Tensor):
+        """Convert from per-dimension indices into global indices in groups.
+
+          The number of dimensions does not need to be divisible by group_size.
+
+          Args:
+              dim_indices: per-dimension indices, e.g. [0, 1, 0, 1, 0]
+              grouped_base: grouped per-dimension bases, e.g. [1, 2, 4, 1, 2]
+          Returns:
+              global indices, e.g., [2, 1] shape [B,T,G]
+        """
+        group_size = self.num_codebooks * self.codebook_dim
+        indices = dim_indices * grouped_base
+        pad_len = (group_size - indices.shape[-1] % group_size) % group_size
+        indices = torch.cat([
+            indices,
+            torch.zeros((*indices.shape[:-1], pad_len),
+                        device=dim_indices.device,
+                        dtype=torch.uint32)
+        ],
+                            dim=-1)
+        indices = indices.reshape(*indices.shape[:-1], -1,
+                                  group_size).sum(dim=-1)
+        if indices.shape[-1] == 1:
+            indices = indices[..., 0]
+        return indices
+
+    def forward(self, inputs: torch.Tensor, paddings: torch.Tensor):
+        """forward for training"""
+        inputs = self.proj(inputs)  # [B,T,G*D]
+        G, D = self.num_codebooks, self.codebook_dim
+        base = torch.pow(
+            2,
+            torch.arange(self.codebook_dim * self.num_codebooks,
+                         dtype=torch.uint32,
+                         device=inputs.device) % self.num_codebooks)
+        samples = inputs >= 0
+        quantized = torch.where(samples, 1.0, -1.0)
+        ids = self._get_indices(samples, base)
+
+        inputs_to_loss = inputs * (1-paddings)[:,;,None]
+        q_vec = quantized
+        num_frames = (1 - paddings).sum()
+        denominator = (num_frames * G * D).clamp(min=1)
+        commitment_loss = 0.0
+        # Commitment loss
+        commitment_loss = ((inputs_to_loss - q_vec.detach())**2 *
+                               (1 - paddings)[:, :, None]).sum() / denominator
+
+        # TODO: Entropy loss
+        total_loss = commitment_loss
+        quantized_vectors = inputs + (q_vec - inputs).detach()
+
+        onehots = _ids_to_onehots(ids * (1-paddings)[:,:,None], codebook_size=self.codebook_size)
+        infos = _add_codebook_summaries(onehots, paddings)
+        return QuantizerOutputs(
+            ids=ids,
+            quantized_vectors=quantized_vectors,
+            loss={
+                "total_loss": total_loss,
+                "commitment_loss": commitment_loss,
+            },
+            summary=infos,
+        )
+
+    def quantize(self, inputs: torch.Tensor, paddings: torch.Tensor):
+        inputs = self.proj(inputs)  # [B,T,G*D]
+        G, D = self.num_codebooks, self.codebook_dim
+        base = torch.pow(
+            2,
+            torch.arange(self.codebook_dim * self.num_codebooks,
+                         dtype=torch.uint32,
+                         device=inputs.device) % self.num_codebooks)
+        samples = inputs >= 0
+        quantized = torch.where(samples, 1.0, -1.0)
+        ids = self._get_indices(samples, base)
+        return ids, quantized
+
+
