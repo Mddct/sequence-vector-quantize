@@ -412,7 +412,7 @@ class LookupFreeQuantizer(nn.Module):
             indices,
             torch.zeros((*indices.shape[:-1], pad_len),
                         device=dim_indices.device,
-                        dtype=torch.uint32)
+                        dtype=torch.int64)
         ],
                             dim=-1)
         indices = indices.reshape(*indices.shape[:-1], -1,
@@ -428,26 +428,28 @@ class LookupFreeQuantizer(nn.Module):
         base = torch.pow(
             2,
             torch.arange(self.codebook_dim * self.num_codebooks,
-                         dtype=torch.uint32,
+                         dtype=torch.int64,
                          device=inputs.device) % self.num_codebooks)
         samples = inputs >= 0
         quantized = torch.where(samples, 1.0, -1.0)
         ids = self._get_indices(samples, base)
 
-        inputs_to_loss = inputs * (1-paddings)[:,;,None]
+        inputs_to_loss = inputs * (1 - paddings)[:, :, None]
         q_vec = quantized
         num_frames = (1 - paddings).sum()
         denominator = (num_frames * G * D).clamp(min=1)
         commitment_loss = 0.0
         # Commitment loss
         commitment_loss = ((inputs_to_loss - q_vec.detach())**2 *
-                               (1 - paddings)[:, :, None]).sum() / denominator
+                           (1 - paddings)[:, :, None]).sum() / denominator
 
         # TODO: Entropy loss
         total_loss = commitment_loss
         quantized_vectors = inputs + (q_vec - inputs).detach()
 
-        onehots = _ids_to_onehots(ids * (1-paddings)[:,:,None], codebook_size=self.codebook_size)
+        onehots = _ids_to_onehots(ids *
+                                  (1 - paddings).to(ids.dtype)[:, :, None],
+                                  codebook_size=self.codebook_size)
         infos = _add_codebook_summaries(onehots, paddings)
         return QuantizerOutputs(
             ids=ids,
@@ -465,7 +467,7 @@ class LookupFreeQuantizer(nn.Module):
         base = torch.pow(
             2,
             torch.arange(self.codebook_dim * self.num_codebooks,
-                         dtype=torch.uint32,
+                         dtype=torch.int64,
                          device=inputs.device) % self.num_codebooks)
         samples = inputs >= 0
         quantized = torch.where(samples, 1.0, -1.0)
@@ -473,3 +475,15 @@ class LookupFreeQuantizer(nn.Module):
         return ids, quantized
 
 
+if __name__ == '__main__':
+    lfq = LookupFreeQuantizer(
+        256,
+        1,
+        2 ^ 16,
+        16,
+    )
+
+    inputs = torch.rand(1, 100, 256)
+    paddings = torch.zeros(1, 100)
+    print(lfq.quantize(inputs, paddings))
+    print(lfq(inputs, paddings))
