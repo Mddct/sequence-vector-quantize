@@ -374,6 +374,8 @@ class GumbelSoftmaxVectorQuantizer(nn.Module):
 
 
 class LookupFreeQuantizer(nn.Module):
+    """https://arxiv.org/pdf/2310.05737
+    """
 
     def __init__(
         self,
